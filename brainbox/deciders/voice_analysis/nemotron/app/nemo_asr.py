@@ -38,6 +38,15 @@ class _RecognizerConfig(Structure):
     ]
 
 
+class _SpeechContext(Structure):
+    _fields_ = [
+        ('size', c_size_t),
+        ('phrases', POINTER(c_char_p)),
+        ('phrase_count', c_size_t),
+        ('boost', c_float),
+    ]
+
+
 class _RecognitionOptions(Structure):
     _fields_ = [
         ('size', c_size_t),
@@ -146,11 +155,19 @@ def _read_result(result) -> dict:
     )
 
 
-def _options(language: str, interim_results: bool) -> _RecognitionOptions:
+def _options(language: str, interim_results: bool, phrases: list[str] | None = None, boost: float = 2.0) -> _RecognitionOptions:
     options = _get_lib().nemo_speech_asr_recognition_options_default()
     options.language_code = (language or 'auto').encode()
     options.interim_results = interim_results
     options.enable_word_time_offsets = True
+    if phrases:
+        # Word boosting needs the SentencePiece tokenizer embedded in the GGUF, otherwise it is silently off
+        encoded = (c_char_p * len(phrases))(*[phrase.encode() for phrase in phrases])
+        context = _SpeechContext(ctypes.sizeof(_SpeechContext), encoded, len(phrases), boost)
+        options.speech_contexts = ctypes.cast(ctypes.pointer(context), c_void_p)
+        options.speech_context_count = 1
+        # The C structures point at these, so they live as long as the options
+        options._speech_context = (encoded, context)
     return options
 
 
@@ -160,8 +177,8 @@ def _as_float_pointer(samples: np.ndarray):
 
 
 class NemoStream:
-    def __init__(self, recognizer: 'NemoRecognizer', language: str):
-        self._options = _options(language, True)
+    def __init__(self, recognizer: 'NemoRecognizer', language: str, phrases: list[str] | None = None, boost: float = 2.0):
+        self._options = _options(language, True, phrases, boost)
         self._handle = c_void_p()
         _check(_get_lib().nemo_speech_asr_streaming_recognize(
             recognizer._handle, byref(self._options), byref(self._handle)))
@@ -205,9 +222,10 @@ class NemoRecognizer:
         self._handle = c_void_p()
         _check(lib.nemo_speech_asr_create(byref(config), byref(self._handle)))
 
-    def recognize(self, samples: np.ndarray, sample_rate: int, language: str = 'auto') -> dict:
+    def recognize(self, samples: np.ndarray, sample_rate: int, language: str = 'auto',
+                  phrases: list[str] | None = None, boost: float = 2.0) -> dict:
         lib = _get_lib()
-        options = _options(language, False)
+        options = _options(language, False, phrases, boost)
         keep, pointer = _as_float_pointer(samples)
         result = c_void_p()
         _check(lib.nemo_speech_asr_recognize_f32(
@@ -217,8 +235,8 @@ class NemoRecognizer:
         finally:
             lib.nemo_speech_asr_result_destroy(result)
 
-    def open_stream(self, language: str = 'auto') -> NemoStream:
-        return NemoStream(self, language)
+    def open_stream(self, language: str = 'auto', phrases: list[str] | None = None, boost: float = 2.0) -> NemoStream:
+        return NemoStream(self, language, phrases, boost)
 
     def close(self):
         if self._handle:

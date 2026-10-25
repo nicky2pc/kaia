@@ -12,10 +12,17 @@ class NemotronService(INemotron):
     def __init__(self, storage: SingleModelStorage):
         self.storage = storage
 
-    def transcribe(self, file: FileLike, language: str = 'auto', model: str | None = None) -> JSON:
+    def transcribe(
+            self,
+            file: FileLike,
+            language: str = 'auto',
+            model: str | None = None,
+            phrases: list[str] | None = None,
+            boost: float = 2.0,
+    ) -> JSON:
         recognizer = self.storage.get_model(model or DEFAULT_MODEL)
         samples, sample_rate = decode_all(FileLikeHandler.to_bytes(file))
-        return recognizer.recognize(samples, sample_rate, language)
+        return recognizer.recognize(samples, sample_rate, language, phrases, boost)
 
     def transcribe_stream(
             self,
@@ -23,10 +30,12 @@ class NemotronService(INemotron):
             language: str = 'auto',
             sample_rate: int = 16000,
             model: str | None = None,
+            phrases: list[str] | None = None,
+            boost: float = 2.0,
     ) -> Iterable[dict[str, JSON]]:
         recognizer = self.storage.get_model(model or DEFAULT_MODEL)
         decoder = PcmStreamDecoder(sample_rate)
-        stream = recognizer.open_stream(language)
+        stream = recognizer.open_stream(language, phrases, boost)
         try:
             for chunk in FileLikeHandler.to_bytes_iterable(audio):
                 samples = decoder.feed(chunk)
